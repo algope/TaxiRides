@@ -20,13 +20,14 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 
 
-import java.util.Calendar;
-import java.util.TimeZone;
+import java.util.*;
+import java.util.stream.Collectors;
 
-import static org.apache.flink.quickstart.AirportTrends.JFKTerminal.*;
+import static java.util.stream.Collectors.toMap;
+import static org.apache.flink.quickstart.AirportTrends2.JFKTerminal.*;
 
 
-public class AirportTrends {
+public class AirportTrends2 {
 
     public enum JFKTerminal {
         TERMINAL_1(71436),
@@ -49,7 +50,12 @@ public class AirportTrends {
             }
             return NOT_A_TERMINAL;
         }
+
+        public int getValue() {
+            return mapGrid;
+        }
     }
+
 
     public static class JFKFilter implements FilterFunction<TaxiRide> {
 
@@ -89,26 +95,43 @@ public class AirportTrends {
 
 
     public static class RideCounter
-            implements WindowFunction<Tuple2<JFKTerminal, Integer>, Tuple3<JFKTerminal, Integer, Integer>, Tuple, TimeWindow> {
+            implements AllWindowFunction<Tuple2<JFKTerminal, Integer>, Tuple3<JFKTerminal, Integer, Integer>, TimeWindow> {
         @SuppressWarnings("unchecked")
         @Override
-        public void apply(
-                Tuple key,
-                TimeWindow window,
-                Iterable<Tuple2<JFKTerminal, Integer>> values,
-                Collector<Tuple3<JFKTerminal, Integer, Integer>> out) throws Exception {
+        public void apply(TimeWindow timeWindow, Iterable<Tuple2<JFKTerminal, Integer>> iterable, Collector<Tuple3<JFKTerminal, Integer, Integer>> collector) throws Exception {
 
-            JFKTerminal terminal = ((Tuple2<JFKTerminal, Integer>) key).f0;
-            Integer hour = ((Tuple2<JFKTerminal, Integer>) key).f1;
+            LinkedHashMap<JFKTerminal, Integer> hashMap = new LinkedHashMap<>();
 
-            int cnt = 0;
-            for (Tuple2<JFKTerminal, Integer> v : values) {
-                cnt += 1;
+            Calendar calendar = Calendar.getInstance();
+            calendar.setTimeZone(TimeZone.getTimeZone("America/New_York"));
+            calendar.setTimeInMillis(timeWindow.getStart());
+            int hour = calendar.get(Calendar.HOUR_OF_DAY);
+
+            for (Tuple2<JFKTerminal, Integer> it : iterable) {
+                if (hashMap.containsKey(it.f0)) {
+                    hashMap.put(it.f0, hashMap.get(it.f0) + 1);
+                } else {
+                    hashMap.put(it.f0, 1);
+                }
             }
 
-            out.collect(new Tuple3<>(terminal, cnt, hour));
-        }
+            for (JFKTerminal name : hashMap.keySet()) {
 
+                String key = name.toString();
+                String value = hashMap.get(name).toString();
+                System.out.println(key + " " + value);
+            }
+
+            Map<JFKTerminal, Integer> sortedByValue = hashMap
+                    .entrySet()
+                    .stream()
+                    .sorted(Map.Entry.comparingByValue(Collections.reverseOrder()))
+                    .collect(toMap(Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
+
+            Map.Entry<JFKTerminal, Integer> top = sortedByValue.entrySet().iterator().next();
+
+            collector.collect(new Tuple3<>(top.getKey(), top.getValue(), hour));
+        }
     }
 
     public static void main(String[] args) throws Exception {
@@ -125,10 +148,8 @@ public class AirportTrends {
                 .filter(new JFKFilter())
                 // match ride to terminal
                 .map(new JFKTerminalMatcher())
-                // partition by cell id and event type
-                .<KeyedStream<JFKTerminal, Integer>>keyBy(0, 1)
                 // build sliding window
-                .timeWindow(Time.minutes(60))
+                .timeWindowAll(Time.minutes(60))
                 // count ride events in window
                 .apply(new RideCounter());
         // print the filtered stream
